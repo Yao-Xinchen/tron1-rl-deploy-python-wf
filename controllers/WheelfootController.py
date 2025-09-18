@@ -260,7 +260,7 @@ class WheelfootController:
                 self.last_actions[i] = self.actions[i]
                 self.actions[i] = max(action_min / self.wheel_joint_damping,
                                       min(action_max / self.wheel_joint_damping, self.actions[i]))
-                velocity_des = self.actions[i] * self.wheel_joint_damping
+                velocity_des = self.actions[i] * self.control_cfg['action_scale_vel'] * self.wheel_joint_damping
                 self.set_joint_command(i, 0, velocity_des, 0, 0, self.wheel_joint_damping)
 
     def swap_positions(self, initial_array, reverse=False, exclude_wheel=False):
