@@ -21,14 +21,13 @@ class WheelfootController:
 
         # Load configuration and model file paths based on robot type
         self.config_file = f'{model_dir}/{self.robot_type}/params.yaml'
-        self.model_policy = f'{model_dir}/{self.robot_type}/policy/policy.onnx'
-        self.model_encoder = f'{model_dir}/{self.robot_type}/policy/encoder.onnx'
+        self.model_policy = f'{model_dir}/{self.robot_type}/policy/student_policy.onnx'
 
         # Load configuration settings from the YAML file
         self.load_config(self.config_file)
         
         # Load the ONNX model
-        self.initialize_onnx_models()
+        self.initialize_onnx_model()
 
         # Prepare robot command structure with default values for mode, q, dq, tau, Kp, Kd
         self.robot_cmd = datatypes.RobotCmd()
@@ -82,7 +81,7 @@ class WheelfootController:
         # Flag indicating first received observation
         self.is_first_rec_obs = True
 
-    def initialize_onnx_models(self):
+    def initialize_onnx_model(self):
         # Configure ONNX Runtime session options to optimize CPU usage
         session_options = ort.SessionOptions()
         # Limit the number of threads used for parallel computation within individual operators
@@ -98,19 +97,20 @@ class WheelfootController:
 
         # Define execution providers to use CPU only, ensuring no GPU inference
         cpu_providers = ['CPUExecutionProvider']
-        
-        # Load the ONNX model and set up input and output names
-        self.policy_session = ort.InferenceSession(self.model_policy, sess_options=session_options, providers=cpu_providers)
-        self.policy_input_names = [self.policy_session.get_inputs()[i].name for i in range(self.policy_session.get_inputs().__len__())]
-        self.policy_output_names = [self.policy_session.get_outputs()[i].name for i in range(self.policy_session.get_outputs().__len__())]
-        self.policy_input_shapes = [self.policy_session.get_inputs()[i].shape for i in range(self.policy_session.get_inputs().__len__())]
-        self.policy_output_shapes = [self.policy_session.get_outputs()[i].shape for i in range(self.policy_session.get_outputs().__len__())]
 
-        self.encoder_session = ort.InferenceSession(self.model_encoder, sess_options=session_options, providers=cpu_providers)
-        self.encoder_input_names = [self.encoder_session.get_inputs()[i].name for i in range(self.encoder_session.get_inputs().__len__())]
-        self.encoder_output_names = [self.encoder_session.get_outputs()[i].name for i in range(self.encoder_session.get_outputs().__len__())]
-        self.encoder_input_shapes = [self.encoder_session.get_inputs()[i].shape for i in range(self.encoder_session.get_inputs().__len__())]
-        self.encoder_output_shapes = [self.encoder_session.get_outputs()[i].shape for i in range(self.encoder_session.get_outputs().__len__())]
+        # Load the integrated ONNX model (encoder + policy)
+        if not os.path.exists(self.model_policy):
+            raise FileNotFoundError(f"ONNX model file not found: {self.model_policy}")
+
+        try:
+            self.policy_session = ort.InferenceSession(self.model_policy, sess_options=session_options, providers=cpu_providers)
+            self.policy_input_names = [inp.name for inp in self.policy_session.get_inputs()]
+            self.policy_output_names = [out.name for out in self.policy_session.get_outputs()]
+            self.policy_input_shapes = [inp.shape for inp in self.policy_session.get_inputs()]
+            self.policy_output_shapes = [out.shape for out in self.policy_session.get_outputs()]
+            print(f"[INFO] Successfully loaded integrated ONNX model from: {self.model_policy}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load ONNX model: {e}")
 
     # Load the configuration from a YAML file
     def load_config(self, config_file):
@@ -128,15 +128,11 @@ class WheelfootController:
         self.commands_size = config['PointfootCfg']['size']['commands_size']
         self.observations_size = config['PointfootCfg']['size']['observations_size']
         self.obs_history_length = config['PointfootCfg']['size']['obs_history_length']
-        self.encoder_output_size = config['PointfootCfg']['size']['encoder_output_size']
         self.imu_orientation_offset = np.array(list(config['PointfootCfg']['imu_orientation_offset'].values()))
-        self.user_cmd_cfg = config['PointfootCfg']['user_cmd_scales']
         self.loop_frequency = config['PointfootCfg']['loop_frequency']
-        self.encoder_input_size = self.obs_history_length * self.observations_size
 
         # Initialize variables for actions, observations, and commands
         self.proprio_history_vector = np.zeros(self.obs_history_length * self.observations_size)
-        self.encoder_out = np.zeros(self.encoder_output_size)
         self.actions = np.zeros(self.actions_size)
         self.observations = np.zeros(self.observations_size)
         self.last_actions = np.zeros(self.actions_size)
@@ -218,7 +214,6 @@ class WheelfootController:
         # Execute actions every 'decimation' iterations
         if self.loop_count % self.control_cfg['decimation'] == 0:
             self.compute_observation()
-            self.compute_encoder()
             self.compute_actions()
             # Clip the actions within predefined limits
             action_min = -self.rl_cfg['clip_scales']['clip_actions']
@@ -255,7 +250,7 @@ class WheelfootController:
                 self.last_actions[i] = self.actions[i]
                 self.actions[i] = max(action_min / self.wheel_joint_damping,
                                       min(action_max / self.wheel_joint_damping, self.actions[i]))
-                velocity_des = self.actions[i] * self.wheel_joint_damping
+                velocity_des = self.actions[i] * self.wheel_joint_damping * self.control_cfg['action_scale_vel']
                 self.set_joint_command(i, 0, velocity_des, 0, 0, self.wheel_joint_damping)
 
     def compute_observation(self):
@@ -282,107 +277,94 @@ class WheelfootController:
         # Retrieve the last actions that were applied to the robot
         actions = np.array(self.last_actions)
 
-        # Create a command scaler matrix for linear and angular velocities
-        command_scaler = np.diag([
-            self.user_cmd_cfg['lin_vel_x'],  # Scale factor for linear velocity in x direction
-            self.user_cmd_cfg['lin_vel_y'],  # Scale factor for linear velocity in y direction
-            self.user_cmd_cfg['ang_vel_yaw']  # Scale factor for yaw (angular velocity)
-        ])
-
-        # Apply scaling to the command inputs (velocity commands)
-        self.scaled_commands = np.dot(command_scaler, self.commands)
-
         # Populate observation vector
         joint_pos_value = (joint_positions - self.init_joint_angles) * self.obs_scales['dof_pos']
 
         # In WF, joint pos does not include wheel speed, index(3, 7) needs to be removed
         joint_pos_input = np.array([joint_pos_value[idx] for idx in self.joint_pos_idxs])
 
-        # Create the observation vector by concatenating various state variables:
-        # - Base angular velocity (scaled)
-        # - Projected gravity vector
-        # - Joint positions (difference from initial angles, scaled)
-        # - Joint velocities (scaled)
-        # - Last actions applied to the robot
-        # - Scaled command inputs
-        obs = np.concatenate([
-            base_ang_vel * self.obs_scales['ang_vel'],  # Scaled base angular velocity
-            projected_gravity,  # Projected gravity vector in body frame
-            joint_pos_input,  # Scaled joint positions
-            joint_velocities * self.obs_scales['dof_vel'],  # Scaled joint velocities
-            actions  # Last actions taken by the robot
+        # Create observation vector WITHOUT commands (for history buffer - 28 elements)
+        obs_without_commands = np.concatenate([
+            base_ang_vel * self.obs_scales['ang_vel'],  # Scaled base angular velocity (3)
+            projected_gravity,  # Projected gravity vector in body frame (3)
+            joint_pos_input,  # Scaled joint positions (6)
+            joint_velocities * self.obs_scales['dof_vel'],  # Scaled joint velocities (8)
+            actions,  # Last actions taken by the robot (8)
         ])
+
+        # Create observation vector WITH commands (for current observation - 34 elements)
+        obs_with_commands = np.concatenate([
+            base_ang_vel * self.obs_scales['ang_vel'],  # Scaled base angular velocity (3)
+            projected_gravity,  # Projected gravity vector in body frame (3)
+            joint_pos_input,  # Scaled joint positions (6)
+            joint_velocities * self.obs_scales['dof_vel'],  # Scaled joint velocities (8)
+            actions,  # Last actions taken by the robot (8)
+            self.commands  # Commands (6)
+        ])
+
+        # Calculate sizes for history buffer (without commands) and current observation (with commands)
+        obs_without_commands_size = len(obs_without_commands)  # Should be 28
 
         # Check if this is the first recorded observation
         if self.is_first_rec_obs:
-            # Calculate the total size of the encoder input
-            input_size = np.prod(self.encoder_input_shapes[0])
-            
+            # Calculate the total size of the history input (obs_history_length * obs_without_commands_size)
+            input_size = self.obs_history_length * obs_without_commands_size
+
             # Initialize the proprioceptive history buffer with zeros
             self.proprio_history_buffer = np.zeros(input_size)
 
-            # Fill the proprioceptive history buffer with the current observation for the entire history length
+            # Fill the proprioceptive history buffer with the observation WITHOUT commands for the entire history length
             for i in range(self.obs_history_length):
-                self.proprio_history_buffer[i * self.observations_size:(i + 1) * self.observations_size] = obs
+                self.proprio_history_buffer[i * obs_without_commands_size:(i + 1) * obs_without_commands_size] = obs_without_commands
 
             # Update the flag to indicate that the first observation has been processed
             self.is_first_rec_obs = False
-        
-        # Shift the existing proprioceptive history buffer to the left
-        self.proprio_history_buffer[:-self.observations_size] = self.proprio_history_buffer[self.observations_size:]
 
-        # Add the current observation to the end of the proprioceptive history buffer
-        self.proprio_history_buffer[-self.observations_size:] = obs
+        # Shift the existing proprioceptive history buffer to the left
+        self.proprio_history_buffer[:-obs_without_commands_size] = self.proprio_history_buffer[obs_without_commands_size:]
+
+        # Add the current observation WITHOUT commands to the end of the proprioceptive history buffer
+        self.proprio_history_buffer[-obs_without_commands_size:] = obs_without_commands
 
         # Convert the proprioceptive history buffer to a numpy array
         self.proprio_history_vector = np.array(self.proprio_history_buffer)
 
+        # Store the current observation WITH commands for the model input
         # Clip the observation values to within the specified limits for stability
         self.observations = np.clip(
-            obs, 
+            obs_with_commands,
             -self.rl_cfg['clip_scales']['clip_observations'],  # Lower limit for clipping
             self.rl_cfg['clip_scales']['clip_observations']  # Upper limit for clipping
         )
 
     def compute_actions(self):
         """
-        Computes the actions based on the current observations using the policy session.
+        Computes the actions using the integrated ONNX model (encoder + policy).
+        The model expects two inputs with batch dimensions:
+        - obs: Current observation WITH commands [1, 34]
+        - obs_hist: Historical observations WITHOUT commands [1, 560] (28 * 20)
         """
-        # Concatenate observations into a single tensor and convert to float32
-        input_tensor = np.concatenate([self.encoder_out, self.observations, self.scaled_commands], axis=0)
-        input_tensor = input_tensor.astype(np.float32)
-        
-        # Create a dictionary of inputs for the policy session
-        inputs = {self.policy_input_names[0]: input_tensor}
-        
-        # Run the policy session and get the output
-        output = self.policy_session.run(self.policy_output_names, inputs)
-        
-        # Flatten the output and store it as actions
-        self.actions = np.array(output).flatten()
+        try:
+            # Convert observations and history to numpy arrays and ensure float32 dtype
+            # Add batch dimension (batch_size=1) by reshaping to [1, features]
+            obs_np = self.observations.astype(np.float32).reshape(1, -1)  # [1, 34] - with commands
+            obs_history_np = self.proprio_history_vector.astype(np.float32).reshape(1, -1)  # [1, 560] - without commands
 
-    def compute_encoder(self):
-        """
-        Computes the encoder output based on the proprioceptive history buffer.
+            # Create inputs dictionary for the integrated model
+            inputs = {
+                self.policy_input_names[0]: obs_np,        # Current obs with commands
+                self.policy_input_names[1]: obs_history_np # History without commands
+            }
 
-        This method first concatenates the proprioceptive history buffer into a single input tensor.
-        Then it converts the input tensor to the float32 data type. After that, it creates a dictionary
-        of inputs for the encoder session and runs the encoder session to get the output. Finally,
-        it flattens the output and stores it as the encoder output.
-        """
-        # Concatenate the proprioceptive history buffer into a single tensor and convert to float32
-        input_tensor = np.concatenate([self.proprio_history_buffer], axis=0)
-        input_tensor = input_tensor.astype(np.float32)
+            # Run inference with the integrated model
+            outputs = self.policy_session.run(self.policy_output_names, inputs)
 
-        # Create a dictionary of inputs for the encoder session
-        inputs = {self.encoder_input_names[0]: input_tensor}
+            # Store the actions from the model output (remove batch dimension)
+            self.actions[:] = np.array(outputs[0]).flatten()
 
-        # Run the encoder session and get the output
-        output = self.encoder_session.run(self.encoder_output_names, inputs)
+        except Exception as e:
+            raise RuntimeError(f"ONNX inference failed: {e}")
 
-        # Flatten the output and store it as the encoder output
-        self.encoder_out = np.array(output).flatten()
- 
     def set_joint_command(self, joint_index, q, dq, tau, kp, kd):
         """
         Sends a command to configure the state of a specific joint.
@@ -458,17 +440,7 @@ class WheelfootController:
           print(f"L1 + X: stop_controller...")
           self.start_controller = False
 
-        linear_x  = sensor_joy.axes[1]
-        linear_y  = sensor_joy.axes[0]
-        angular_z = sensor_joy.axes[2]
-
-        linear_x  = 1.0 if linear_x > 1.0 else (-1.0 if linear_x < -1.0 else linear_x)
-        linear_y  = 1.0 if linear_y > 1.0 else (-1.0 if linear_y < -1.0 else linear_y)
-        angular_z = 1.0 if angular_z > 1.0 else (-1.0 if angular_z < -1.0 else angular_z)
-
-        self.commands[0] = linear_x * 0.5
-        self.commands[1] = linear_y * 0.5
-        self.commands[2] = angular_z * 0.5
+        self.commands[:] = np.array([1., 1., 0., 1., 0., 1. ])
 
     # Callback function for receiving diagnostic data
     def robot_diagnostic_callback(self, diagnostic_value: datatypes.DiagnosticValue):
