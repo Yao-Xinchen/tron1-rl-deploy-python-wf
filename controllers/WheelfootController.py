@@ -476,7 +476,7 @@ class WheelfootController:
           print(f"L1 + X: stop_controller...")
           self.start_controller = False
 
-        self.commands[:] = np.array([1., 1., 0., 1., 0., 1. ])
+        self.commands[:] = np.array([0., 1., 0., 1., 0., 1. ])
 
     # Callback function for receiving diagnostic data
     def robot_diagnostic_callback(self, diagnostic_value: datatypes.DiagnosticValue):
