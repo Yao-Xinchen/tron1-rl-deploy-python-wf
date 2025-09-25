@@ -131,7 +131,6 @@ class WheelfootController:
         self.obs_history_length = config['PointfootCfg']['size']['obs_history_length']
         self.encoder_output_size = config['PointfootCfg']['size']['encoder_output_size']
         self.imu_orientation_offset = np.array(list(config['PointfootCfg']['imu_orientation_offset'].values()))
-        self.user_cmd_cfg = config['PointfootCfg']['user_cmd_scales']
         self.loop_frequency = config['PointfootCfg']['loop_frequency']
         self.encoder_input_size = self.obs_history_length * self.observations_size
 
@@ -142,7 +141,6 @@ class WheelfootController:
         self.observations = np.zeros(self.observations_size)
         self.last_actions = np.zeros(self.actions_size)
         self.commands = np.zeros(self.commands_size)  # command to the robot (e.g., velocity, rotation)
-        self.scaled_commands = np.zeros(self.commands_size)
         self.base_lin_vel = np.zeros(3)  # base linear velocity
         self.base_position = np.zeros(3)  # robot base position
         self.loop_count = 0  # loop iteration count
@@ -260,7 +258,7 @@ class WheelfootController:
                 self.last_actions[i] = self.actions[i]
                 self.actions[i] = max(action_min / self.wheel_joint_damping,
                                       min(action_max / self.wheel_joint_damping, self.actions[i]))
-                velocity_des = self.actions[i] * self.wheel_joint_damping
+                velocity_des = self.actions[i] * self.wheel_joint_damping * self.control_cfg['action_scale_vel']
                 self.set_joint_command(i, 0, velocity_des, 0, 0, self.wheel_joint_damping)
 
     def swap_positions(self, initial_array, reverse=False, exclude_wheel=False):
@@ -300,16 +298,6 @@ class WheelfootController:
         # Retrieve the last actions that were applied to the robot
         actions = np.array(self.last_actions)
 
-        # Create a command scaler matrix for linear and angular velocities
-        command_scaler = np.diag([
-            self.user_cmd_cfg['lin_vel_x'],  # Scale factor for linear velocity in x direction
-            self.user_cmd_cfg['lin_vel_y'],  # Scale factor for linear velocity in y direction
-            self.user_cmd_cfg['ang_vel_yaw']  # Scale factor for yaw (angular velocity)
-        ])
-
-        # Apply scaling to the command inputs (velocity commands)
-        self.scaled_commands = np.dot(command_scaler, self.commands)
-
         # Populate observation vector
         joint_pos_value = (joint_positions - self.init_joint_angles) * self.obs_scales['dof_pos']
 
@@ -338,8 +326,11 @@ class WheelfootController:
 
         # Check if this is the first recorded observation
         if self.is_first_rec_obs:
-            # Calculate the total size of the encoder input
-            input_size = np.prod(self.encoder_input_shapes[0])
+            # Calculate the total size of the encoder input, handling dynamic batch dimensions
+            shape = self.encoder_input_shapes[0]
+            # Filter out dynamic dimensions (strings) and replace with batch size of 1
+            numeric_shape = [1 if isinstance(dim, str) else dim for dim in shape]
+            input_size = np.prod(numeric_shape)
             
             # Initialize the proprioceptive history buffer with zeros
             self.proprio_history_buffer = np.zeros(input_size)
@@ -372,9 +363,11 @@ class WheelfootController:
         Computes the actions based on the current observations using the policy session.
         """
         # Concatenate observations into a single tensor and convert to float32
-        input_tensor = np.concatenate([self.encoder_out, self.observations, self.scaled_commands], axis=0)
+        input_tensor = np.concatenate([self.encoder_out, self.observations, self.commands], axis=0)
         input_tensor = input_tensor.astype(np.float32)
-        
+        # Add batch dimension for ONNX model (reshape from [features] to [1, features])
+        input_tensor = input_tensor.reshape(1, -1)
+
         # Create a dictionary of inputs for the policy session
         inputs = {self.policy_input_names[0]: input_tensor}
         
@@ -396,6 +389,8 @@ class WheelfootController:
         # Concatenate the proprioceptive history buffer into a single tensor and convert to float32
         input_tensor = np.concatenate([self.proprio_history_buffer], axis=0)
         input_tensor = input_tensor.astype(np.float32)
+        # Add batch dimension for ONNX model (reshape from [features] to [1, features])
+        input_tensor = input_tensor.reshape(1, -1)
 
         # Create a dictionary of inputs for the encoder session
         inputs = {self.encoder_input_names[0]: input_tensor}
@@ -481,17 +476,7 @@ class WheelfootController:
           print(f"L1 + X: stop_controller...")
           self.start_controller = False
 
-        linear_x  = sensor_joy.axes[1]
-        linear_y  = sensor_joy.axes[0]
-        angular_z = sensor_joy.axes[2]
-
-        linear_x  = 1.0 if linear_x > 1.0 else (-1.0 if linear_x < -1.0 else linear_x)
-        linear_y  = 1.0 if linear_y > 1.0 else (-1.0 if linear_y < -1.0 else linear_y)
-        angular_z = 1.0 if angular_z > 1.0 else (-1.0 if angular_z < -1.0 else angular_z)
-
-        self.commands[0] = linear_x * 0.5
-        self.commands[1] = linear_y * 0.5
-        self.commands[2] = angular_z * 0.5
+        self.commands[:] = np.array([1., 1., 0., 1., 0., 1. ])
 
     # Callback function for receiving diagnostic data
     def robot_diagnostic_callback(self, diagnostic_value: datatypes.DiagnosticValue):
