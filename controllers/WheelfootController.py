@@ -382,7 +382,7 @@ class WheelfootController:
         output = self.policy_session.run(self.policy_output_names, inputs)
         
         # Flatten the output and store it as actions
-        self.actions = np.array(output).flatten()
+        self.actions[:] = np.array(output).flatten()
 
     def compute_encoder(self):
         """
@@ -404,7 +404,7 @@ class WheelfootController:
         output = self.encoder_session.run(self.encoder_output_names, inputs)
 
         # Flatten the output and store it as the encoder output
-        self.encoder_out = np.array(output).flatten()
+        self.encoder_out[:] = np.array(output).flatten()
  
     def set_joint_command(self, joint_index, q, dq, tau, kp, kd):
         """
