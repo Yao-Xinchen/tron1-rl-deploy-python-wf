@@ -25,9 +25,9 @@ PointfootCfg:
 
   control:
     # PD Drive parameters:
-    stiffness: 42.0
-    damping: 2.5
-    wheel_joint_damping: 0.8
+    stiffness: 40.0
+    damping: 1.8
+    wheel_joint_damping: 0.5
     wheel_joint_torque_limit: 40
     action_scale_pos: 0.5
     action_scale_vel: 5.0
@@ -61,5 +61,5 @@ PointfootCfg:
 
   user_cmd_scales:
     lin_vel_x: 2.0
-    lin_vel_y: 1.5
-    ang_vel_yaw: 2.5
+    lin_vel_y: 2.0
+    ang_vel_yaw: 2.0

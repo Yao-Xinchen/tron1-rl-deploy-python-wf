@@ -338,8 +338,11 @@ class WheelfootController:
 
         # Check if this is the first recorded observation
         if self.is_first_rec_obs:
-            # Calculate the total size of the encoder input
-            input_size = np.prod(self.encoder_input_shapes[0])
+            # Calculate the total size of the encoder input, handling dynamic batch dimensions
+            shape = self.encoder_input_shapes[0]
+            # Filter out dynamic dimensions (strings) and replace with batch size of 1
+            numeric_shape = [1 if isinstance(dim, str) else dim for dim in shape]
+            input_size = np.prod(numeric_shape)
             
             # Initialize the proprioceptive history buffer with zeros
             self.proprio_history_buffer = np.zeros(input_size)
@@ -372,17 +375,19 @@ class WheelfootController:
         Computes the actions based on the current observations using the policy session.
         """
         # Concatenate observations into a single tensor and convert to float32
-        input_tensor = np.concatenate([self.encoder_out, self.observations, self.scaled_commands], axis=0)
+        input_tensor = np.concatenate([self.encoder_out, self.observations, self.commands], axis=0)
         input_tensor = input_tensor.astype(np.float32)
-        
+        # Add batch dimension for ONNX model (reshape from [features] to [1, features])
+        input_tensor = input_tensor.reshape(1, -1)
+
         # Create a dictionary of inputs for the policy session
         inputs = {self.policy_input_names[0]: input_tensor}
-        
+
         # Run the policy session and get the output
         output = self.policy_session.run(self.policy_output_names, inputs)
-        
+
         # Flatten the output and store it as actions
-        self.actions[:] = np.array(output).flatten()
+        self.actions = np.array(output).flatten()
 
     def compute_encoder(self):
         """
@@ -396,6 +401,8 @@ class WheelfootController:
         # Concatenate the proprioceptive history buffer into a single tensor and convert to float32
         input_tensor = np.concatenate([self.proprio_history_buffer], axis=0)
         input_tensor = input_tensor.astype(np.float32)
+        # Add batch dimension for ONNX model (reshape from [features] to [1, features])
+        input_tensor = input_tensor.reshape(1, -1)
 
         # Create a dictionary of inputs for the encoder session
         inputs = {self.encoder_input_names[0]: input_tensor}
@@ -404,7 +411,7 @@ class WheelfootController:
         output = self.encoder_session.run(self.encoder_output_names, inputs)
 
         # Flatten the output and store it as the encoder output
-        self.encoder_out[:] = np.array(output).flatten()
+        self.encoder_out = np.array(output).flatten()
  
     def set_joint_command(self, joint_index, q, dq, tau, kp, kd):
         """
@@ -489,9 +496,9 @@ class WheelfootController:
         linear_y  = 1.0 if linear_y > 1.0 else (-1.0 if linear_y < -1.0 else linear_y)
         angular_z = 1.0 if angular_z > 1.0 else (-1.0 if angular_z < -1.0 else angular_z)
 
-        self.commands[0] = linear_x * 0.5
-        self.commands[1] = linear_y * 0.5
-        self.commands[2] = angular_z * 0.5
+        self.commands[0] = linear_x
+        self.commands[1] = linear_y
+        self.commands[2] = angular_z
 
     # Callback function for receiving diagnostic data
     def robot_diagnostic_callback(self, diagnostic_value: datatypes.DiagnosticValue):
