@@ -41,11 +41,11 @@ PointfootCfg:
     obs_scales:
       ang_vel: 0.25
       dof_pos: 1.0
-      dof_vel: 0.1
+      dof_vel: 0.05
 
   size:
     actions_size: 8
-    observations_size: 28 # 31
+    observations_size: 28
     commands_size: 3
     obs_history_length: 20
     jointpos_idxs: [0, 1, 2, 4, 5, 6]
@@ -60,6 +60,6 @@ PointfootCfg:
     yaw: 0.0
 
   user_cmd_scales:
-    lin_vel_x: 2.0
-    lin_vel_y: 2.0
+    lin_vel_x: 0.8
+    lin_vel_y: 0.8
     ang_vel_yaw: 2.0

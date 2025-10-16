@@ -83,6 +83,9 @@ class WheelfootController:
         # Flag indicating first received observation
         self.is_first_rec_obs = True
 
+        # Observation
+        self.fake_pose_cmd = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 1.0])
+
     def initialize_onnx_models(self):
         # Configure ONNX Runtime session options to optimize CPU usage
         session_options = ort.SessionOptions()
@@ -375,7 +378,7 @@ class WheelfootController:
         Computes the actions based on the current observations using the policy session.
         """
         # Concatenate observations into a single tensor and convert to float32
-        input_tensor = np.concatenate([self.encoder_out, self.observations, self.commands], axis=0)
+        input_tensor = np.concatenate([self.encoder_out, self.observations, self.fake_pose_cmd, self.scaled_commands], axis=0)
         input_tensor = input_tensor.astype(np.float32)
         # Add batch dimension for ONNX model (reshape from [features] to [1, features])
         input_tensor = input_tensor.reshape(1, -1)
