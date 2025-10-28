@@ -84,7 +84,7 @@ class WheelfootController:
         self.is_first_rec_obs = True
 
         # Observation
-        self.fake_pose_cmd = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 1.0])
+        self.fake_pose_cmd = np.array([0.0, 0.0, 1.0, 0.0, 1.0])
 
     def initialize_onnx_models(self):
         # Configure ONNX Runtime session options to optimize CPU usage
