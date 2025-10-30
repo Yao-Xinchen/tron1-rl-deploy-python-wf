@@ -63,3 +63,8 @@ PointfootCfg:
     lin_vel_x: 0.8
     lin_vel_y: 0.8
     ang_vel_yaw: 2.0
+
+  user_cmd_offsets:
+    lin_vel_x: 0.05
+    lin_vel_y: 0.0
+    ang_vel_yaw: 0.23

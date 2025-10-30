@@ -135,6 +135,7 @@ class WheelfootController:
         self.encoder_output_size = config['PointfootCfg']['size']['encoder_output_size']
         self.imu_orientation_offset = np.array(list(config['PointfootCfg']['imu_orientation_offset'].values()))
         self.user_cmd_cfg = config['PointfootCfg']['user_cmd_scales']
+        self.user_cmd_offsets = config['PointfootCfg']['user_cmd_offsets']
         self.loop_frequency = config['PointfootCfg']['loop_frequency']
         self.encoder_input_size = self.obs_history_length * self.observations_size
 
@@ -309,9 +310,14 @@ class WheelfootController:
             self.user_cmd_cfg['lin_vel_y'],  # Scale factor for linear velocity in y direction
             self.user_cmd_cfg['ang_vel_yaw']  # Scale factor for yaw (angular velocity)
         ])
+        command_offsets = np.array([
+            self.user_cmd_offsets['lin_vel_x'],
+            self.user_cmd_offsets['lin_vel_y'],
+            self.user_cmd_offsets['ang_vel_yaw'],
+        ])
 
         # Apply scaling to the command inputs (velocity commands)
-        self.scaled_commands = np.dot(command_scaler, self.commands)
+        self.scaled_commands = np.dot(command_scaler, self.commands) + command_offsets
 
         # Populate observation vector
         joint_pos_value = (joint_positions - self.init_joint_angles) * self.obs_scales['dof_pos']
